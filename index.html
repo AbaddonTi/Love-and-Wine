@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Мониторинг Серверов</title>
+    <script src="https://cdn.socket.io/4.0.1/socket.io.min.js"></script>
+    <style>
+        /* Темная тема */
+        body {
+            font-family: Arial, sans-serif;
+            background-color: #121212;
+            color: #e0e0e0;
+            margin: 0;
+            padding: 0;
+        }
+
+        /* Заголовок с индикатором WebSocket */
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 20px;
+            background-color: #1f1f1f;
+            border-bottom: 1px solid #333;
+        }
+
+        header h1 {
+            margin: 0;
+            font-size: 24px;
+        }
+
+        .ws-status {
+            display: flex;
+            align-items: center;
+        }
+
+        .status-indicator {
+            width: 15px;
+            height: 15px;
+            border-radius: 50%;
+            margin-right: 8px;
+            background-color: red; /* По умолчанию отключено */
+        }
+
+        .connected {
+            background-color: #4caf50;
+        }
+
+        .disconnected {
+            background-color: #f44336;
+        }
+
+        /* Стили для вкладок */
+        .tabs {
+            display: flex;
+            background-color: #1f1f1f;
+            border-bottom: 1px solid #333;
+        }
+
+        .tab {
+            padding: 14px 20px;
+            cursor: pointer;
+            flex: 1;
+            text-align: center;
+            transition: background-color 0.3s;
+        }
+
+        .tab:hover {
+            background-color: #333;
+        }
+
+        .active-tab {
+            background-color: #333;
+            border-bottom: 2px solid #4caf50;
+        }
+
+        /* Стили для содержимого вкладок */
+        .tab-content {
+            display: none;
+            padding: 20px;
+        }
+
+        .active-content {
+            display: block;
+        }
+
+        /* Стили формы */
+        form {
+            display: flex;
+            flex-direction: column;
+        }
+
+        label {
+            margin-top: 10px;
+        }
+
+        textarea, input[type="text"], input[type="password"] {
+            padding: 8px;
+            margin-top: 5px;
+            border: 1px solid #333;
+            border-radius: 4px;
+            background-color: #2c2c2c;
+            color: #e0e0e0;
+        }
+
+        textarea {
+            resize: vertical;
+            min-height: 100px;
+        }
+
+        /* Сообщения об ошибках */
+        .error-message {
+            color: #f44336;
+            margin-top: 10px;
+        }
+
+        /* Стили для серверов */
+        #server-status {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 20px;
+        }
+
+        .server-tile {
+            background-color: #1f1f1f;
+            padding: 20px;
+            border-radius: 8px;
+            width: 200px;
+            text-align: center;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        .status-indicator-large {
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            margin-bottom: 10px;
+        }
+
+        .online {
+            background-color: #4caf50;
+        }
+
+        .offline {
+            background-color: #f44336;
+        }
+
+        /* Адаптивность */
+        @media (max-width: 600px) {
+            #server-status {
+                flex-direction: column;
+                align-items: center;
+            }
+
+            .server-tile {
+                width: 90%;
+            }
+        }
+    </style>
+</head>
+<body>
+<header>
+    <h1>Мониторинг Серверов</h1>
+    <div class="ws-status">
+        <div id="ws-indicator" class="status-indicator disconnected"></div>
+        <span id="ws-status-text">Отключено</span>
+    </div>
+</header>
+
+<div class="tabs">
+    <div class="tab active-tab" data-tab="config-tab">Конфигурация</div>
+    <div class="tab" data-tab="status-tab">Статус Серверов</div>
+</div>
+
+<div id="config-tab" class="tab-content active-content">
+    <h2>Обновить Конфигурацию</h2>
+    <form id="config-form">
+        <label for="servers">IP-адреса серверов (каждый на новой строке):</label>
+        <textarea id="servers" name="servers" placeholder="170.64.210.114&#10;142.93.237.92" required></textarea>
+
+        <label for="login">Логин:</label>
+        <input type="text" id="login" name="login" placeholder="root" required>
+
+        <label for="password">Пароль:</label>
+        <input type="password" id="password" name="password" placeholder="Ваш пароль" required>
+
+        <div id="error-message" class="error-message"></div>
+    </form>
+</div>
+
+<div id="status-tab" class="tab-content">
+    <h2>Статус Серверов</h2>
+    <div id="server-status"></div>
+</div>
+
+<script>
+    // Переключение вкладок
+    const tabs = document.querySelectorAll('.tab');
+    const contents = document.querySelectorAll('.tab-content');
+
+    tabs.forEach(tab => {
+        tab.addEventListener('click', () => {
+            // Удаляем активный класс у всех вкладок и содержимого
+            tabs.forEach(t => t.classList.remove('active-tab'));
+            contents.forEach(c => c.classList.remove('active-content'));
+
+            // Добавляем активный класс выбранной вкладке и соответствующему содержимому
+            tab.classList.add('active-tab');
+            document.getElementById(tab.dataset.tab).classList.add('active-content');
+        });
+    });
+
+    // WebSocket соединение
+    const socket = io('http://localhost:5000', {
+        transports: ['websocket'],
+    });
+
+    const wsIndicator = document.getElementById('ws-indicator');
+    const wsStatusText = document.getElementById('ws-status-text');
+    const serverStatusDiv = document.getElementById('server-status');
+    const errorMessageDiv = document.getElementById('error-message');
+
+    // Валидация IP-адресов
+    function isValidIP(ip) {
+        const regex = /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/;
+        return regex.test(ip);
+    }
+
+    let debounceTimer;
+    const DEBOUNCE_DELAY = 1000; 
+
+    function sendConfigUpdate() {
+        const serversText = document.getElementById('servers').value.trim();
+        const login = document.getElementById('login').value.trim();
+        const password = document.getElementById('password').value.trim();
+
+        const servers = serversText.split('\n').map(ip => ip.trim()).filter(ip => ip !== '');
+
+        if (servers.length === 0) {
+            displayError('Необходимо указать хотя бы один IP-адрес сервера.');
+            return;
+        }
+
+        for (const ip of servers) {
+            if (!isValidIP(ip)) {
+                displayError(`Недействительный IP-адрес: ${ip}`);
+                return;
+            }
+        }
+
+        if (!login) {
+            displayError('Логин не может быть пустым.');
+            return;
+        }
+
+        if (!password) {
+            displayError('Пароль не может быть пустым.');
+            return;
+        }
+
+        displayError('');
+
+        socket.emit('configure', { servers, login, password });
+        console.log('Конфигурация отправлена:', { servers, login });
+    }
+
+    function displayError(message) {
+        errorMessageDiv.textContent = message;
+    }
+
+    const configForm = document.getElementById('config-form');
+    const configInputs = configForm.querySelectorAll('textarea, input');
+
+    configInputs.forEach(input => {
+        input.addEventListener('input', () => {
+            clearTimeout(debounceTimer);
+            debounceTimer = setTimeout(sendConfigUpdate, DEBOUNCE_DELAY);
+        });
+    });
+
+    window.addEventListener('load', () => {
+        sendConfigUpdate();
+    });
+
+    socket.on('connect', function() {
+        wsIndicator.classList.remove('disconnected');
+        wsIndicator.classList.add('connected');
+        wsStatusText.textContent = 'Подключено';
+        console.log('Успешно подключено к серверу');
+    });
+
+    socket.on('connect_error', function(error) {
+        wsIndicator.classList.remove('connected');
+        wsIndicator.classList.add('disconnected');
+        wsStatusText.textContent = 'Отключено';
+        console.error('Ошибка подключения:', error);
+    });
+
+    socket.on('disconnect', function() {
+        wsIndicator.classList.remove('connected');
+        wsIndicator.classList.add('disconnected');
+        wsStatusText.textContent = 'Отключено';
+        console.warn('Отключено от сервера');
+    });
+
+    // Обработка события 'server_status'
+    socket.on('server_status', function(data) {
+        serverStatusDiv.innerHTML = '';
+        if (data.error) {
+            serverStatusDiv.textContent = data.error;
+            return;
+        }
+        for (const server in data) {
+            const status = data[server];
+            const serverDiv = document.createElement('div');
+            serverDiv.className = 'server-tile';
+
+            const statusIndicator = document.createElement('div');
+            statusIndicator.className = 'status-indicator-large ' + status;
+
+            const serverName = document.createElement('strong');
+            serverName.textContent = server;
+
+            const statusText = document.createElement('span');
+            statusText.textContent = status === 'online' ? 'Онлайн' : 'Офлайн';
+
+            serverDiv.appendChild(statusIndicator);
+            serverDiv.appendChild(serverName);
+            serverDiv.appendChild(statusText);
+
+            serverStatusDiv.appendChild(serverDiv);
+        }
+    });
+
+    socket.on('error', function(message) {
+        displayError(message);
+        console.error('Ошибка от сервера:', message);
+    });
+</script>
+</body>
+</html>
